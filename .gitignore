@@ -1,0 +1,5 @@
+# Local Frida build artifacts
+frida/build/
+frida/deps/
+dist/
+out/

@@ -1,0 +1,406 @@
+name: Build Frida
+
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: "Target operating system"
+        required: true
+        type: choice
+        default: android
+        options:
+          - windows
+          - linux
+          - macos
+          - android
+          - ios
+      arch:
+        description: "Target architecture (valid combos: windows=x86_64/x86/arm64, linux=x86_64/x86/armhf/arm64, macos=x86_64/arm64/arm64e, android=arm64/arm/x86_64/x86, ios=arm64/arm64e/x86_64-simulator/arm64-simulator)"
+        required: true
+        type: choice
+        default: arm64
+        options:
+          - arm64
+          - arm64e
+          - arm
+          - armhf
+          - x86_64
+          - x86
+          - x86_64-simulator
+          - arm64-simulator
+      component:
+        description: "Frida component to build"
+        required: true
+        type: choice
+        default: frida-server
+        options:
+          - frida-server
+          - frida-gadget
+          - frida-agent
+          - frida-core
+          - frida-gum
+          - frida-gumjs
+          - frida-inject
+          - frida-portal
+          - devkits
+          - all
+      debug:
+        description: "Include debug symbols (bigger, unstripped binaries)"
+        required: false
+        type: boolean
+        default: false
+
+env:
+  ANDROID_NDK_VERSION: r29
+
+jobs:
+  plan:
+    name: Validate & plan
+    runs-on: ubuntu-latest
+    outputs:
+      runner: ${{ steps.plan.outputs.runner }}
+      python_arch: ${{ steps.plan.outputs.python_arch }}
+      host: ${{ steps.plan.outputs.host }}
+      container: ${{ steps.plan.outputs.container }}
+      targets: ${{ steps.plan.outputs.targets }}
+      extra_opts: ${{ steps.plan.outputs.extra_opts }}
+      patterns: ${{ steps.plan.outputs.patterns }}
+    steps:
+      - name: Compute build plan
+        id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          os="${{ inputs.os }}"
+          arch="${{ inputs.arch }}"
+          comp="${{ inputs.component }}"
+
+          invalid() {
+            echo "::error::'$arch' is not a valid architecture for $os. Valid architectures: $1"
+            exit 1
+          }
+
+          runner=""
+          python_arch=""
+          container="null"
+          extra_opts=""
+          case "$os" in
+            windows)
+              case "$arch" in
+                x86)    runner="windows-latest"; python_arch="x86" ;;
+                x86_64) runner="windows-latest"; python_arch="x64" ;;
+                arm64)  runner="windows-11-arm"; python_arch="arm64" ;;
+                *) invalid "x86_64 x86 arm64" ;;
+              esac
+              ;;
+            linux)
+              case "$arch" in
+                x86|x86_64|armhf|arm64) ;;
+                *) invalid "x86_64 x86 armhf arm64" ;;
+              esac
+              runner="ubuntu-latest"
+              container="\"ghcr.io/frida/x-tools-linux-$arch:latest\""
+              ;;
+            android)
+              case "$arch" in
+                arm64|arm|x86_64|x86) ;;
+                *) invalid "arm64 arm x86_64 x86" ;;
+              esac
+              runner="ubuntu-latest"
+              ;;
+            macos)
+              case "$arch" in
+                x86_64|arm64|arm64e) ;;
+                *) invalid "x86_64 arm64 arm64e" ;;
+              esac
+              runner="macos-latest"
+              ;;
+            ios)
+              case "$arch" in
+                arm64|arm64e|x86_64-simulator|arm64-simulator) ;;
+                *) invalid "arm64 arm64e x86_64-simulator arm64-simulator" ;;
+              esac
+              runner="macos-latest"
+              extra_opts="-Dfrida-core:assets=installed"
+              ;;
+            *)
+              echo "::error::Unknown OS '$os'"
+              exit 1
+              ;;
+          esac
+
+          targets=""
+          patterns=""
+          case "$comp" in
+            frida-server) targets="frida-server" ; patterns=$'frida-server\nfrida-server.exe' ;;
+            frida-gadget) targets="frida-gadget" ; patterns=$'frida-gadget.so\nfrida-gadget.dylib\nfrida-gadget.dll' ;;
+            frida-agent)  targets="frida-agent"  ; patterns=$'frida-agent.so\nfrida-agent.dylib\nfrida-agent.dll' ;;
+            frida-inject) targets="frida-inject" ; patterns=$'frida-inject\nfrida-inject.exe' ;;
+            frida-portal) targets="frida-portal" ; patterns=$'frida-portal\nfrida-portal.exe' ;;
+            frida-core)   targets="frida-core"   ; patterns=$'libfrida-core.a\nfrida-core.lib' ;;
+            frida-gum)    targets="frida-gum-1.0"   ; patterns=$'libfrida-gum-1.0.a\nfrida-gum-1.0.lib' ;;
+            frida-gumjs)  targets="frida-gumjs-1.0" ; patterns=$'libfrida-gumjs-1.0.a\nfrida-gumjs-1.0.lib' ;;
+            devkits)      targets="gum-devkit gumjs-devkit core-devkit" ;;
+            all)          targets="" ;;
+            *)
+              echo "::error::Unknown component '$comp'"
+              exit 1
+              ;;
+          esac
+
+          {
+            echo "runner=$runner"
+            echo "python_arch=$python_arch"
+            echo "host=$os-$arch"
+            echo "container=$container"
+            echo "targets=$targets"
+            echo "extra_opts=$extra_opts"
+            echo "patterns<<PLAN_EOF"
+            echo "$patterns"
+            echo "PLAN_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    name: "${{ inputs.component }} • ${{ inputs.os }}-${{ inputs.arch }}"
+    needs: plan
+    runs-on: ${{ needs.plan.outputs.runner }}
+    container: ${{ fromJSON(needs.plan.outputs.container) }}
+    timeout-minutes: 150
+    env:
+      FRIDA_PREFIX: ${{ runner.workspace }}/dist
+      PLAN_TARGETS: ${{ needs.plan.outputs.targets }}
+      PLAN_EXTRA_OPTS: ${{ needs.plan.outputs.extra_opts }}
+      PLAN_PATTERNS: ${{ needs.plan.outputs.patterns }}
+      # Ad-hoc codesigning by default ("-"). If you have Apple signing
+      # identities, add MACOS_CERTID / IOS_CERTID repo secrets to override.
+      MACOS_CERTID: ${{ secrets.MACOS_CERTID || '-' }}
+      IOS_CERTID: ${{ secrets.IOS_CERTID || '-' }}
+      WATCHOS_CERTID: ${{ secrets.WATCHOS_CERTID || '-' }}
+      TVOS_CERTID: ${{ secrets.TVOS_CERTID || '-' }}
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Set up Python
+        if: runner.os == 'Windows'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: ${{ needs.plan.outputs.python_arch }}
+
+      - name: Set up Android NDK
+        if: inputs.os == 'android'
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: ${{ env.ANDROID_NDK_VERSION }}
+          add-to-path: false
+
+      - name: Add ANDROID_NDK_ROOT to environment
+        if: inputs.os == 'android'
+        shell: bash
+        run: echo "ANDROID_NDK_ROOT=${{ steps.setup-ndk.outputs.ndk-path }}" >> "$GITHUB_ENV"
+
+      - name: Configure Linux cross-build environment
+        if: inputs.os == 'linux'
+        shell: bash
+        run: |
+          if [ "${{ inputs.arch }}" = "x86" ]; then
+            echo "FRIDA_CAN_RUN_HOST_BINARIES=yes" >> "$GITHUB_ENV"
+          elif [ "${{ inputs.arch }}" != "x86_64" ]; then
+            echo "FRIDA_QEMU_SYSROOT=/opt/x-tools/$XTOOLS_HOST/$XTOOLS_HOST/sysroot" >> "$GITHUB_ENV"
+          fi
+
+      - name: Fetch needed submodules
+        shell: bash
+        run: python frida/tools/ensure-submodules.py
+
+      - name: Configure
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd frida
+          cfg_args=(
+            --prefix="$FRIDA_PREFIX"
+            "--host=${{ needs.plan.outputs.host }}"
+            --enable-gadget
+            --enable-server
+            --enable-portal
+            --enable-inject
+            --disable-frida-python
+            --disable-frida-tools
+            --disable-graft-tool
+          )
+          if [ "${{ inputs.debug }}" = "true" ]; then
+            cfg_args+=(--enable-symbols)
+          fi
+          meson_opts=(
+            "-Dfrida-gum:devkits=gum,gumjs"
+            "-Dfrida-core:devkits=core"
+          )
+          if [ -n "$PLAN_EXTRA_OPTS" ]; then
+            # shellcheck disable=SC2206
+            meson_opts+=($PLAN_EXTRA_OPTS)
+          fi
+          ./configure "${cfg_args[@]}" -- "${meson_opts[@]}"
+
+      - name: Configure (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Push-Location frida
+          $cfgArgs = @(
+            "--prefix=$Env:FRIDA_PREFIX",
+            "--host=${{ needs.plan.outputs.host }}",
+            "--enable-gadget",
+            "--enable-server",
+            "--enable-portal",
+            "--enable-inject",
+            "--disable-frida-python",
+            "--disable-frida-tools",
+            "--disable-graft-tool"
+          )
+          if ("${{ inputs.debug }}" -eq "true") {
+            $cfgArgs += "--enable-symbols"
+          }
+          $mesonOpts = @(
+            "-Dfrida-gum:devkits=gum,gumjs",
+            "-Dfrida-core:devkits=core"
+          )
+          if ($Env:PLAN_EXTRA_OPTS) {
+            $mesonOpts += ($Env:PLAN_EXTRA_OPTS -split " ")
+          }
+          .\configure @cfgArgs -- @mesonOpts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Pop-Location
+
+      - name: Compile
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd frida
+          make $PLAN_TARGETS
+
+      - name: Compile (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Push-Location frida
+          $targets = @()
+          if ($Env:PLAN_TARGETS) { $targets = $Env:PLAN_TARGETS -split " " }
+          .\make @targets
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Pop-Location
+
+      - name: Collect artifacts
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$GITHUB_WORKSPACE/out"
+          mkdir -p "$out"
+          cd frida
+          comp="${{ inputs.component }}"
+          if [ "$comp" = "all" ]; then
+            make install
+            cp -rv "$FRIDA_PREFIX"/. "$out"/
+          elif [ "$comp" = "devkits" ]; then
+            mkdir -p "$out/gum" "$out/gumjs" "$out/core"
+            find build/subprojects/frida-gum/gum \
+              -maxdepth 1 -type f \( -name "frida-gum.h" -o -name "libfrida-gum.a" \
+                -o -name "frida-gum.lib" -o -name "frida-gum-example*" \) \
+              -exec cp -v {} "$out/gum/" \;
+            find build/subprojects/frida-gum/bindings/gumjs \
+              -maxdepth 1 -type f \( -name "frida-gumjs.h" -o -name "libfrida-gumjs.a" \
+                -o -name "frida-gumjs.lib" -o -name "frida-gumjs-example*" \) \
+              -exec cp -v {} "$out/gumjs/" \;
+            find build/subprojects/frida-core/src/devkit \
+              -maxdepth 1 -type f \( -name "frida-core.h" -o -name "frida-core.gir" \
+                -o -name "libfrida-core.a" -o -name "frida-core.lib" -o -name "frida-core-example*" \) \
+              -exec cp -v {} "$out/core/" \;
+          else
+            while IFS= read -r pat; do
+              [ -z "$pat" ] && continue
+              find build -type f -name "$pat" -exec cp -v {} "$out/" \;
+            done <<< "$PLAN_PATTERNS"
+          fi
+          if [ -z "$(find "$out" -type f -print -quit)" ]; then
+            echo "::error::No artifacts were collected for $comp"
+            ls -laR build | head -200
+            exit 1
+          fi
+          find "$out" -type f -exec ls -lh {} +
+
+      - name: Collect artifacts (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $out = Join-Path $Env:GITHUB_WORKSPACE "out"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          Push-Location frida
+          $comp = "${{ inputs.component }}"
+          if ($comp -eq "all") {
+            .\make install
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Copy-Item -Recurse -Force -Path (Join-Path $Env:FRIDA_PREFIX "*") -Destination $out
+          } elseif ($comp -eq "devkits") {
+            $kits = @(
+              @{ Dir = "build\subprojects\frida-gum\gum";            Out = "gum";   Names = @("frida-gum.h",   "libfrida-gum.a",   "frida-gum.lib",   "frida-gum-example*") },
+              @{ Dir = "build\subprojects\frida-gum\bindings\gumjs"; Out = "gumjs"; Names = @("frida-gumjs.h", "libfrida-gumjs.a", "frida-gumjs.lib", "frida-gumjs-example*") },
+              @{ Dir = "build\subprojects\frida-core\src\devkit";    Out = "core";  Names = @("frida-core.h",  "frida-core.gir",   "libfrida-core.a", "frida-core.lib", "frida-core-example*") }
+            )
+            foreach ($kit in $kits) {
+              $dst = Join-Path $out $kit.Out
+              New-Item -ItemType Directory -Force -Path $dst | Out-Null
+              if (Test-Path $kit.Dir) {
+                Copy-Item -Path (Join-Path $kit.Dir "*") -Include $kit.Names -Destination $dst
+              }
+            }
+          } else {
+            foreach ($pat in ($Env:PLAN_PATTERNS -split "`n")) {
+              $pat = $pat.Trim()
+              if (-not $pat) { continue }
+              Get-ChildItem -Path build -Recurse -File -Filter $pat |
+                ForEach-Object { Copy-Item $_.FullName -Destination $out }
+            }
+          }
+          Pop-Location
+          $files = Get-ChildItem $out -Recurse -File
+          if (-not $files) {
+            Write-Error "No artifacts were collected for $comp"
+            exit 1
+          }
+          $files | Format-Table FullName, Length
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frida-${{ inputs.component }}-${{ inputs.os }}-${{ inputs.arch }}
+          path: out/
+          overwrite: true
+          if-no-files-found: error
+
+      - name: Build summary
+        if: success()
+        shell: bash
+        run: |
+          version=$(python3 frida/releng/frida_version.py 2>/dev/null || python frida/releng/frida_version.py)
+          {
+            echo "## Frida $version"
+            echo ""
+            echo "- **Component:** \`${{ inputs.component }}\`"
+            echo "- **Target:** \`${{ inputs.os }}-${{ inputs.arch }}\`"
+            echo "- **Debug symbols:** ${{ inputs.debug }}"
+            echo ""
+            echo "| File | Size | SHA-256 |"
+            echo "| --- | --- | --- |"
+            find out -type f | sort | while read -r f; do
+              size=$(du -h "$f" | cut -f1)
+              hash=$(sha256sum "$f" | cut -c1-16)
+              echo "| \`${f#out/}\` | $size | \`$hash…\` |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
