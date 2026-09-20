@@ -167,7 +167,7 @@ jobs:
     container: ${{ fromJSON(needs.plan.outputs.container) }}
     timeout-minutes: 150
     env:
-      FRIDA_PREFIX: ${{ runner.workspace }}/dist
+      FRIDA_PREFIX: ${{ github.workspace }}/dist
       PLAN_TARGETS: ${{ needs.plan.outputs.targets }}
       PLAN_EXTRA_OPTS: ${{ needs.plan.outputs.extra_opts }}
       PLAN_PATTERNS: ${{ needs.plan.outputs.patterns }}

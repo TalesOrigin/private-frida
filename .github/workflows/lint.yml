@@ -1,0 +1,29 @@
+name: Validate workflows
+
+on:
+  push:
+    paths:
+      - '.github/workflows/**'
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  actionlint:
+    name: Check workflow syntax and expressions
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Run actionlint
+        # Validate Actions syntax and context availability without requiring
+        # the Frida toolchain or checking out its submodules.
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/repo" -w /repo \
+            rhysd/actionlint:1.7.12 -color -shellcheck=
