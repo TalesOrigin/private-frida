@@ -310,11 +310,11 @@ jobs:
             cp -rv "$FRIDA_PREFIX"/. "$out"/
           elif [ "$comp" = "devkits" ]; then
             mkdir -p "$out/gum" "$out/gumjs" "$out/core"
-            find build/subprojects/frida-gum/gum \
+            find build/subprojects/frida-gum/gum/devkit \
               -maxdepth 1 -type f \( -name "frida-gum.h" -o -name "libfrida-gum.a" \
                 -o -name "frida-gum.lib" -o -name "frida-gum-example*" \) \
               -exec cp -v {} "$out/gum/" \;
-            find build/subprojects/frida-gum/bindings/gumjs \
+            find build/subprojects/frida-gum/bindings/gumjs/devkit \
               -maxdepth 1 -type f \( -name "frida-gumjs.h" -o -name "libfrida-gumjs.a" \
                 -o -name "frida-gumjs.lib" -o -name "frida-gumjs-example*" \) \
               -exec cp -v {} "$out/gumjs/" \;
@@ -349,9 +349,9 @@ jobs:
             Copy-Item -Recurse -Force -Path (Join-Path $Env:FRIDA_PREFIX "*") -Destination $out
           } elseif ($comp -eq "devkits") {
             $kits = @(
-              @{ Dir = "build\subprojects\frida-gum\gum";            Out = "gum";   Names = @("frida-gum.h",   "libfrida-gum.a",   "frida-gum.lib",   "frida-gum-example*") },
-              @{ Dir = "build\subprojects\frida-gum\bindings\gumjs"; Out = "gumjs"; Names = @("frida-gumjs.h", "libfrida-gumjs.a", "frida-gumjs.lib", "frida-gumjs-example*") },
-              @{ Dir = "build\subprojects\frida-core\src\devkit";    Out = "core";  Names = @("frida-core.h",  "frida-core.gir",   "libfrida-core.a", "frida-core.lib", "frida-core-example*") }
+              @{ Dir = "build\subprojects\frida-gum\gum\devkit";            Out = "gum";   Names = @("frida-gum.h",   "libfrida-gum.a",   "frida-gum.lib",   "frida-gum-example*") },
+              @{ Dir = "build\subprojects\frida-gum\bindings\gumjs\devkit"; Out = "gumjs"; Names = @("frida-gumjs.h", "libfrida-gumjs.a", "frida-gumjs.lib", "frida-gumjs-example*") },
+              @{ Dir = "build\subprojects\frida-core\src\devkit";            Out = "core";  Names = @("frida-core.h",  "frida-core.gir",   "libfrida-core.a", "frida-core.lib", "frida-core-example*") }
             )
             foreach ($kit in $kits) {
               $dst = Join-Path $out $kit.Out
