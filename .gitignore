@@ -3,3 +3,4 @@ frida/build/
 frida/deps/
 dist/
 out/
+__pycache__/

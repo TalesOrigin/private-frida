@@ -49,6 +49,31 @@ on:
         required: false
         type: boolean
         default: false
+      port:
+        description: "Custom default control port (replaces 27042; cluster port = port + 10)"
+        required: true
+        type: string
+        default: "39053"
+      alias:
+        description: "Replacement name for 'frida' in artifact names and strings (exactly 5 chars, a-z0-9)"
+        required: true
+        type: string
+        default: "vexrd"
+      strip:
+        description: "Strip symbols from artifacts"
+        required: false
+        type: boolean
+        default: true
+      rename:
+        description: "Rename artifacts so file/process/module names no longer say 'frida'"
+        required: false
+        type: boolean
+        default: true
+      obfuscate:
+        description: "Replace fingerprint strings/symbols in artifacts ('frida:rpc' kept for stock clients)"
+        required: false
+        type: boolean
+        default: true
 
 env:
   ANDROID_NDK_VERSION: r29
@@ -217,6 +242,14 @@ jobs:
         shell: bash
         run: python frida/tools/ensure-submodules.py
 
+      - name: Patch default ports
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tools/patch-defaults.sh \
+            --root "$GITHUB_WORKSPACE/frida" \
+            --port "${{ inputs.port }}"
+
       - name: Configure
         if: runner.os != 'Windows'
         shell: bash
@@ -376,6 +409,57 @@ jobs:
           }
           $files | Format-Table FullName, Length
 
+      - name: Harden artifacts (strip + rename + string/symbol patching)
+        shell: bash
+        run: |
+          set -euo pipefail
+          os="${{ inputs.os }}"
+          arch="${{ inputs.arch }}"
+          # Pick a strip tool that understands the target architecture:
+          #   android            -> NDK llvm-strip (handles all ABIs)
+          #   linux cross (x-tools) -> cross binutils strip
+          #   everything else    -> auto (native strip / llvm-strip)
+          strip_bin=""
+          if [ "$os" = "android" ] && [ -n "${ANDROID_NDK_ROOT:-}" ]; then
+            strip_bin="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+          elif [ "$os" = "linux" ] && [ -n "${XTOOLS_HOST:-}" ] && [ "$arch" != "x86_64" ]; then
+            strip_bin="${XTOOLS_HOST}-strip"
+          fi
+
+          args=(--out-dir out --alias "${{ inputs.alias }}" --verbose)
+          if [ "${{ inputs.strip }}" = "true" ]; then
+            # Windows artifacts from MSVC carry no in-file symbol table (PDBs
+            # are separate files and are not collected), so don't hard-fail
+            # there.
+            if [ "$os" != "windows" ]; then
+              args+=(--require-strip)
+            fi
+            args+=(--strip)
+            if [ -n "$strip_bin" ]; then
+              args+=(--strip-bin "$strip_bin")
+            fi
+          else
+            args+=(--no-strip)
+          fi
+          if [ "${{ inputs.rename }}" = "false" ]; then
+            args+=(--no-rename)
+          fi
+          if [ "${{ inputs.obfuscate }}" = "false" ]; then
+            args+=(--no-strings)
+          fi
+
+          py="$(command -v python3 || command -v python)"
+
+          shopt -s nullglob
+          mapfile -d '' -t files < <(find out -type f -print0)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::No artifacts found in out/ to harden"
+            exit 1
+          fi
+          for f in "${files[@]}"; do
+            "$py" tools/harden.py "$f" "${args[@]}"
+          done
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -389,11 +473,15 @@ jobs:
         shell: bash
         run: |
           version=$(python3 frida/releng/frida_version.py 2>/dev/null || python frida/releng/frida_version.py)
+          cluster=$(( (10#${{ inputs.port }} + 10) % 65536 ))
           {
-            echo "## Frida $version"
+            echo "## Frida $version (private build)"
             echo ""
             echo "- **Component:** \`${{ inputs.component }}\`"
             echo "- **Target:** \`${{ inputs.os }}-${{ inputs.arch }}\`"
+            echo "- **Control port:** \`${{ inputs.port }}\` (cluster \`${cluster}\`)"
+            echo "- **Alias:** \`${{ inputs.alias }}\`"
+            echo "- **Stripped:** ${{ inputs.strip }} • **Renamed:** ${{ inputs.rename }} • **Strings patched:** ${{ inputs.obfuscate }}"
             echo "- **Debug symbols:** ${{ inputs.debug }}"
             echo ""
             echo "| File | Size | SHA-256 |"
