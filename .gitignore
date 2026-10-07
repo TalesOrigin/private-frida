@@ -1,6 +1,6 @@
-# Local Frida build artifacts
-frida/build/
-frida/deps/
-dist/
-out/
-__pycache__/
+/build/
+/deps/
+/releng/__pycache__/
+/releng/modules/frida-gadget-ios/*.dylib
+/releng/modules/frida-gadget-ios/node_modules
+/subprojects/*
